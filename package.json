@@ -1,0 +1,16 @@
+{
+  "name": "tools",
+  "version": "1.0.0",
+  "description": "这是一个功能强大的 Web 服务，用于将化学 SMILES 字符串转换为 LaTeX 的 `chemfig` 宏包代码，并提供实时预览功能。",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "node-tikzjax": "^1.0.3"
+  }
+}

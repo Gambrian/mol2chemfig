@@ -1,0 +1,5 @@
+flask
+mol2chemfigPy3
+rdkit
+requests
+pyinstaller
