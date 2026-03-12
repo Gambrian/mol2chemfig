@@ -1,9 +1,28 @@
 import PyInstaller.__main__
 import os
 import shutil
+from importlib.util import find_spec
+from pathlib import Path
 
 # 定义应用名称
 APP_NAME = "ChemfigLab"
+
+
+def get_indigo_libs():
+    """自动定位已安装 indigo 包中的 Windows 动态库。"""
+    spec = find_spec('indigo')
+    if spec is None or spec.origin is None:
+        return []
+
+    package_dir = Path(spec.origin).resolve().parent
+    lib_dir = package_dir / 'lib' / 'windows-x86_64'
+    dll_names = ['indigo.dll', 'indigo-renderer.dll', 'indigo-inchi.dll']
+    libs = []
+    for dll_name in dll_names:
+        dll_path = lib_dir / dll_name
+        if dll_path.exists():
+            libs.append((dll_path, f'indigo/lib/windows-x86_64/{dll_name}'))
+    return libs
 
 def build():
     # 确保清理旧的构建文件
@@ -21,12 +40,12 @@ def build():
         '--add-data=templates;templates', # 包含模板
         '--add-data=render_tikz.js;.',    # 包含 Node 脚本
         '--add-data=package.json;.',      # 包含 npm 依赖配置
-        # 显式包含 indigo 的原生 DLL 文件
-        '--add-data=C:\\Python314\\Lib\\site-packages\\indigo\\lib\\windows-x86_64\\indigo.dll;indigo/lib/windows-x86_64',
-        '--add-data=C:\\Python314\\Lib\\site-packages\\indigo\\lib\\windows-x86_64\\indigo-renderer.dll;indigo/lib/windows-x86_64',
-        '--add-data=C:\\Python314\\Lib\\site-packages\\indigo\\lib\\windows-x86_64\\indigo-inchi.dll;indigo/lib/windows-x86_64',
         '--clean',
     ]
+
+    for source_path, relative_target in get_indigo_libs():
+        target_dir = str(Path(relative_target).parent).replace('/', '\\')
+        params.append(f'--add-data={source_path};{target_dir}')
 
     print(f"开始打包 {APP_NAME}...")
     PyInstaller.__main__.run(params)

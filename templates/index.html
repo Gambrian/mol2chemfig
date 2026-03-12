@@ -50,7 +50,7 @@
         }
     </style>
 </head>
-<body class="bg-gradient-to-br from-slate-50 to-indigo-50 min-h-screen py-8 px-4">
+<body class="bg-gradient-to-br from-slate-50 via-white to-indigo-50 min-h-screen py-8 px-4">
     <div class="max-w-[1400px] mx-auto">
         <!-- 标题栏 -->
         <header class="mb-8 text-center relative">
@@ -84,16 +84,38 @@
                 </div>
 
                 <!-- 2. 代码 -->
-                <div class="glass-card rounded-3xl shadow-xl shadow-indigo-100/50 p-8">
-                    <div class="flex items-center justify-between mb-4">
-                        <label class="block text-sm font-bold text-slate-700 ml-1">Chemfig 代码</label>
-                        <button id="copy-btn" class="text-xs font-bold text-indigo-600 hover:text-indigo-800 px-4 py-2 bg-indigo-50 rounded-xl transition-all active:scale-95">
-                            复制代码
-                        </button>
+                <div class="glass-card rounded-3xl shadow-xl shadow-indigo-100/50 p-8 space-y-6">
+                    <div class="flex items-center justify-between">
+                        <div>
+                            <label class="block text-sm font-bold text-slate-700 ml-1">Chemfig 输出</label>
+                            <p class="mt-1 ml-1 text-xs text-slate-400">上方用于页面预览，下方保留原始转换结果，便于直接导出。</p>
+                        </div>
                     </div>
-                    <textarea id="chemfig-textarea" 
-                              class="w-full h-64 p-5 code-font text-sm bg-slate-900 text-indigo-100 rounded-2xl border-none focus:ring-4 focus:ring-indigo-500/20 outline-none resize-none leading-relaxed shadow-inner"
-                              placeholder="\chemfig{...}"></textarea>
+
+                    <section>
+                        <div class="flex items-center justify-between mb-3">
+                            <label class="block text-xs font-bold text-slate-500 ml-1 uppercase tracking-widest">预览优化结果</label>
+                            <button id="copy-preview-btn" class="text-xs font-bold text-indigo-600 hover:text-indigo-800 px-4 py-2 bg-indigo-50 rounded-xl transition-all active:scale-95">
+                                复制预览代码
+                            </button>
+                        </div>
+                        <textarea id="chemfig-textarea" 
+                                  class="w-full h-52 p-5 code-font text-sm bg-slate-900 text-indigo-100 rounded-2xl border-none focus:ring-4 focus:ring-indigo-500/20 outline-none resize-none leading-relaxed shadow-inner"
+                                  placeholder="\chemfig{...}"></textarea>
+                    </section>
+
+                    <section>
+                        <div class="flex items-center justify-between mb-3">
+                            <label class="block text-xs font-bold text-slate-500 ml-1 uppercase tracking-widest">原始转换结果</label>
+                            <button id="copy-raw-btn" class="text-xs font-bold text-slate-700 hover:text-slate-900 px-4 py-2 bg-slate-100 rounded-xl transition-all active:scale-95">
+                                复制原始结果
+                            </button>
+                        </div>
+                        <textarea id="chemfig-raw-textarea"
+                                  readonly
+                                  class="w-full h-40 p-5 code-font text-xs bg-white/70 text-slate-700 rounded-2xl border border-slate-200 focus:ring-4 focus:ring-slate-300/30 outline-none resize-none leading-relaxed shadow-inner"
+                                  placeholder="原始 chemfig 输出会显示在这里"></textarea>
+                    </section>
                     
                     <!-- RDKit 预览：移至代码下方，作为辅助预览 -->
                     <div class="mt-8 pt-6 border-t border-slate-100">
@@ -158,7 +180,7 @@
                             <div class="h-4 w-px bg-slate-200"></div>
                             <span class="text-[11px] text-slate-400 font-medium italic">滚轮缩放 • 拖拽移动 • 自动居中</span>
                         </div>
-                        <span class="text-[10px] font-bold text-slate-300">v2.0 PRO</span>
+                        <span class="text-[10px] font-bold text-slate-300">v0.0.3</span>
                     </div>
                 </div>
             </div>
@@ -174,7 +196,9 @@
         const tikzContainer = document.getElementById('tikz-preview-container');
         const tikzPlaceholder = document.getElementById('tikz-placeholder');
         const previewLoader = document.getElementById('preview-loader');
-        const copyBtn = document.getElementById('copy-btn');
+        const rawTextarea = document.getElementById('chemfig-raw-textarea');
+        const copyPreviewBtn = document.getElementById('copy-preview-btn');
+        const copyRawBtn = document.getElementById('copy-raw-btn');
         const refreshBtn = document.getElementById('refresh-btn');
         const resetZoomBtn = document.getElementById('reset-zoom-btn');
 
@@ -197,7 +221,8 @@
                 const data = await response.json();
                 
                 if (response.ok) {
-                    chemfigTextarea.value = data.chemfig;
+                    chemfigTextarea.value = data.chemfig_preview || data.chemfig || '';
+                    rawTextarea.value = data.chemfig_raw || chemfigTextarea.value;
                     // 更新 RDKit 分子预览
                     if (data.preview_url) {
                         rdkitImg.src = data.preview_url;
@@ -205,7 +230,7 @@
                         rdkitPlaceholder.classList.add('hidden');
                     }
                     // 触发 TikZJax 渲染
-                    renderTikZ(data.chemfig);
+                    renderTikZ(chemfigTextarea.value);
                 } else {
                     console.error('Server Error:', data);
                     alert(`转换失败: ${data.error || '未知错误'}`);
@@ -281,6 +306,7 @@
                 } else {
                     console.error('Render error:', data.error);
                     const errorLog = data.stderr || data.error || '未知错误';
+                    const errorSummary = data.error_summary || '未提取到明确的 TeX 错误摘要，请查看完整日志。';
                     tikzContainer.innerHTML = `
                         <div class="flex flex-col h-full p-6">
                             <div class="bg-red-50 text-red-600 p-6 rounded-2xl border border-red-100 flex-1 overflow-hidden flex flex-col">
@@ -288,9 +314,14 @@
                                     <svg class="w-8 h-8 opacity-80" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>
                                     <h3 class="font-bold text-lg">渲染引擎报错 (Backend Logs)</h3>
                                 </div>
+
+                                <div class="mb-4 rounded-xl border border-amber-200 bg-amber-50 p-4">
+                                    <div class="text-[10px] font-bold uppercase tracking-widest text-amber-700 mb-2">Core Error</div>
+                                    <pre class="text-xs text-amber-900 code-font leading-relaxed whitespace-pre-wrap">${errorSummary}</pre>
+                                </div>
                                 
                                 <div class="flex-1 bg-slate-900 rounded-xl p-4 overflow-auto shadow-inner mb-4 group relative">
-                                    <div class="absolute top-2 right-4 text-[10px] font-bold text-slate-500 uppercase tracking-widest opacity-50">Stderr Stream</div>
+                                    <div class="absolute top-2 right-4 text-[10px] font-bold text-slate-500 uppercase tracking-widest opacity-50">Full Backend Log</div>
                                     <pre class="text-xs text-red-400 code-font leading-relaxed whitespace-pre-wrap">${errorLog}</pre>
                                 </div>
 
@@ -299,8 +330,8 @@
                                         <span class="text-lg mt-[-2px]">💡</span>
                                         <div>
                                             <p class="font-bold mb-1 text-slate-700">为什么会报错？</p>
-                                            <p class="leading-relaxed">此渲染引擎基于精简版 WebAssembly TikZJax 运行。它仅支持标准的 Chemfig 语法。如果您使用了复杂的 LaTeX 宏、特殊字体、或者自定义的绘图指令，引擎将无法处理并抛出上述错误。</p>
-                                            <p class="mt-1 font-medium text-indigo-600/80 italic">* 这通常意味着代码在完整 LaTeX 环境下可能没问题，但当前预览环境无法承载。</p>
+                                            <p class="leading-relaxed">日志中已经包含预览代码和展开后的 TeX 内容。当前预览失败并不等于原始 chemfig 无效，但可以先据此继续排查。</p>
+                                            <p class="mt-1 font-medium text-indigo-600/80 italic">* 如果是性能较弱的机器，请耐心等待渲染完成，当前版本不再主动设置超时中断。</p>
                                         </div>
                                     </div>
                                 </div>
@@ -338,11 +369,19 @@
         function hideLoader() { previewLoader.classList.add('hidden'); }
 
         // 复制功能
-        copyBtn.addEventListener('click', () => {
+        copyPreviewBtn.addEventListener('click', () => {
             navigator.clipboard.writeText(chemfigTextarea.value).then(() => {
-                const old = copyBtn.textContent;
-                copyBtn.textContent = '已复制';
-                setTimeout(() => copyBtn.textContent = old, 2000);
+                const old = copyPreviewBtn.textContent;
+                copyPreviewBtn.textContent = '已复制';
+                setTimeout(() => copyPreviewBtn.textContent = old, 2000);
+            });
+        });
+
+        copyRawBtn.addEventListener('click', () => {
+            navigator.clipboard.writeText(rawTextarea.value).then(() => {
+                const old = copyRawBtn.textContent;
+                copyRawBtn.textContent = '已复制';
+                setTimeout(() => copyRawBtn.textContent = old, 2000);
             });
         });
 

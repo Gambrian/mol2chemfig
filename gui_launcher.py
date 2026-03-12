@@ -9,7 +9,7 @@ import time
 import urllib.request
 import zipfile
 import shutil
-import io
+from pathlib import Path
 
 # 导入 Flask app
 from app import app as flask_app
@@ -32,7 +32,8 @@ class LogRedirector:
 def get_resource_path(relative_path):
     if hasattr(sys, '_MEIPASS'):
         return os.path.join(sys._MEIPASS, relative_path)
-    return os.path.join(os.path.abspath("."), relative_path)
+    base_dir = Path(sys.executable).resolve().parent if getattr(sys, 'frozen', False) else Path(__file__).resolve().parent
+    return str(base_dir / relative_path)
 
 class AppManager:
     def __init__(self, root):
@@ -40,6 +41,7 @@ class AppManager:
         self.root.title(APP_NAME)
         self.root.geometry("700x500")
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
+        self.app_root = Path(sys.executable).resolve().parent if getattr(sys, 'frozen', False) else Path(__file__).resolve().parent
         
         self.flask_thread = None
         self.is_running = False
@@ -114,9 +116,9 @@ class AppManager:
             pass
 
         # 检查便携目录
-        node_exe = os.path.join(os.getcwd(), NODE_DIR, "node.exe")
-        if os.path.exists(node_exe):
-            os.environ["PATH"] = os.path.join(os.getcwd(), NODE_DIR) + os.pathsep + os.environ["PATH"]
+        node_exe = self.app_root / NODE_DIR / "node.exe"
+        if node_exe.exists():
+            os.environ["PATH"] = str(node_exe.parent) + os.pathsep + os.environ["PATH"]
             self.log("使用内置便携版 Node.js")
             return True
 
@@ -128,7 +130,9 @@ class AppManager:
     def _download_node(self):
         try:
             self.log(f"正在从镜像下载 Node.js: {NODE_PORTABLE_URL}")
-            zip_path = "node_temp.zip"
+            zip_path = self.app_root / "node_temp.zip"
+            temp_dir = self.app_root / "temp_node"
+            node_dir = self.app_root / NODE_DIR
             
             def progress(count, block_size, total_size):
                 if total_size > 0:
@@ -136,22 +140,23 @@ class AppManager:
                     if percent % 10 == 0:
                         self.root.after(0, lambda: self.status_label.config(text=f"状态: 正在下载 Node.js ({percent}%)"))
 
-            urllib.request.urlretrieve(NODE_PORTABLE_URL, zip_path, reporthook=progress)
+            urllib.request.urlretrieve(NODE_PORTABLE_URL, str(zip_path), reporthook=progress)
             
             self.log("下载完成，正在解压...")
             with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-                zip_ref.extractall("temp_node")
+                zip_ref.extractall(temp_dir)
             
             # 移动文件到 node_runtime
-            inner_dir = os.listdir("temp_node")[0]
-            if os.path.exists(NODE_DIR): shutil.rmtree(NODE_DIR)
-            shutil.move(os.path.join("temp_node", inner_dir), NODE_DIR)
+            inner_dir = next(temp_dir.iterdir())
+            if node_dir.exists():
+                shutil.rmtree(node_dir)
+            shutil.move(str(inner_dir), str(node_dir))
             
             # 清理
-            shutil.rmtree("temp_node")
-            os.remove(zip_path)
+            shutil.rmtree(temp_dir)
+            zip_path.unlink()
             
-            os.environ["PATH"] = os.path.join(os.getcwd(), NODE_DIR) + os.pathsep + os.environ["PATH"]
+            os.environ["PATH"] = str(node_dir) + os.pathsep + os.environ["PATH"]
             self.log("Node.js 便携版安装成功")
             return True
         except Exception as e:
@@ -160,12 +165,20 @@ class AppManager:
             return False
 
     def _ensure_node_packages(self):
-        if not os.path.exists("node_modules"):
+        node_modules_dir = self.app_root / "node_modules"
+        if not node_modules_dir.exists():
             self.log("正在安装 Node.js 渲染依赖 (npm install)...")
             try:
                 # 使用淘宝镜像
-                subprocess.run(["npm", "install", "--registry=https://registry.npmmirror.com"], 
-                               shell=True, capture_output=True, check=True)
+                result = subprocess.run(
+                    ["npm", "install", "--registry=https://registry.npmmirror.com"],
+                    cwd=self.app_root,
+                    capture_output=True,
+                    text=True,
+                    check=True
+                )
+                if result.stdout.strip():
+                    self.log(result.stdout.strip())
                 self.log("Node.js 依赖安装完成")
             except Exception as e:
                 self.log(f"依赖安装失败: {e}")

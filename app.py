@@ -11,13 +11,34 @@ import traceback
 from rdkit import Chem
 from rdkit.Chem import Draw
 
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
 
 # ================= 资源路径处理 =================
+def get_app_root():
+    """获取应用运行根目录（兼容源码运行和 PyInstaller one-dir 发布）。"""
+    if getattr(sys, 'frozen', False):
+        return os.path.dirname(os.path.abspath(sys.executable))
+    return BASE_DIR
+
+
 def get_resource_path(relative_path):
     """获取资源文件绝对路径（兼容 PyInstaller 打包后运行）。"""
     if hasattr(sys, '_MEIPASS'):
         return os.path.join(sys._MEIPASS, relative_path)
-    return os.path.join(os.path.abspath('.'), relative_path)
+    return os.path.join(BASE_DIR, relative_path)
+
+
+def resolve_node_executable():
+    """优先使用应用目录下的便携 Node，其次回退到系统 PATH。"""
+    candidate_paths = [
+        os.path.join(get_app_root(), 'node_runtime', 'node.exe'),
+        os.path.join(BASE_DIR, 'node_runtime', 'node.exe'),
+    ]
+    for candidate in candidate_paths:
+        if os.path.exists(candidate):
+            return candidate
+    return 'node'
 
 
 app = Flask(
@@ -31,7 +52,7 @@ app = Flask(
 def render_tikz_locally(tikz_code):
     """调用本地 Node.js 脚本渲染 TikZ/Chemfig。"""
     try:
-        node_executable = 'node'
+        node_executable = resolve_node_executable()
         script_path = get_resource_path('render_tikz.js')
 
         # Windows 下隐藏黑色命令行窗口
@@ -40,7 +61,8 @@ def render_tikz_locally(tikz_code):
             creation_flags = subprocess.CREATE_NO_WINDOW
 
         result = subprocess.run(
-            [node_executable, script_path, tikz_code],
+            [node_executable, script_path],
+            input=tikz_code.encode('utf-8'),
             capture_output=True,
             check=False,
             creationflags=creation_flags
@@ -70,7 +92,19 @@ def render_tikz_locally(tikz_code):
         if stderr_text.strip():
             log_parts.append(stderr_text.strip())
 
-        full_log = '\n'.join(log_parts)
+        context_parts = [
+            '--- Render Context ---',
+            f'Node executable: {node_executable}',
+            f'Render script: {script_path}',
+            f'Input length: {len(tikz_code)}',
+            '--- Preview Code ---',
+            tikz_code,
+        ]
+
+        if log_parts:
+            context_parts.extend(log_parts)
+
+        full_log = '\n'.join(context_parts).strip()
 
         if result.returncode != 0:
             return None, full_log or f'Process exited with code {result.returncode}'
@@ -85,6 +119,48 @@ def render_tikz_locally(tikz_code):
         return None, f'{error_msg}\n{traceback.format_exc()}'
 
 
+def extract_render_error_summary(log_text):
+    """从完整渲染日志中提取首个核心错误片段，便于前端高亮显示。"""
+    if not log_text:
+        return ''
+
+    lines = str(log_text).splitlines()
+    for idx, line in enumerate(lines):
+        stripped = line.strip()
+        if not stripped.startswith('!'):
+            continue
+
+        snippet = [stripped]
+        for follow in lines[idx + 1:]:
+            follow_stripped = follow.rstrip()
+            if not follow_stripped:
+                break
+            if follow_stripped.lstrip().startswith('? '):
+                break
+            if follow_stripped.startswith('--- '):
+                break
+            snippet.append(follow_stripped)
+            if follow_stripped.lstrip().startswith('l.'):
+                break
+        return '\n'.join(snippet).strip()
+
+    fallback_patterns = [
+        'Undefined control sequence',
+        'Emergency stop',
+        'Runaway argument',
+        'Missing $ inserted',
+        'TeX capacity exceeded',
+        'Could not find SVG tag in output',
+        'Local render error:',
+    ]
+    for pattern in fallback_patterns:
+        for line in lines:
+            if pattern in line:
+                return line.strip()
+
+    return ''
+
+
 @app.route('/render_local', methods=['POST'])
 def render_local():
     data = request.json
@@ -94,8 +170,12 @@ def render_local():
 
     svg, stderr = render_tikz_locally(code)
     if svg:
-        return jsonify({'svg': svg, 'stderr': stderr})
-    return jsonify({'error': 'Render failed', 'stderr': stderr}), 500
+        return jsonify({'svg': svg, 'stderr': stderr, 'error_summary': extract_render_error_summary(stderr)})
+    return jsonify({
+        'error': 'Render failed',
+        'stderr': stderr,
+        'error_summary': extract_render_error_summary(stderr)
+    }), 500
 
 
 # ================= 转换辅助函数 =================
@@ -186,11 +266,47 @@ def _contains_mol2chemfig_error(text):
 
 def _clean_chemfig_output(chemfig_code):
     """清理对前端 TikZ 预览不友好的片段，统一输出格式。"""
+    def replace_charge_for_preview(match):
+        charge_spec = match.group(1)
+        atom_body = match.group(2).strip()
+        if r'\.' in charge_spec:
+            return rf'\chemabove{{{atom_body}}}{{\scriptstyle \bullet}}'
+        return match.group(0)
+
+    chemfig_code = re.sub(
+        r'\\charge\{([^{}]*)\}\{([^{}]+)\}',
+        replace_charge_for_preview,
+        chemfig_code
+    )
     chemfig_code = re.sub(r'\\mcfcringle\{.*?\}', '', chemfig_code)
     chemfig_code = chemfig_code.replace(',,,,draw=none', '').replace(',,,,mcfwavy', '')
+    chemfig_code = re.sub(
+        r'\\mcfright\{([^{}]+)\}\{((?:[^{}]|\{[^{}]*\})+)\}',
+        r'\1\2',
+        chemfig_code
+    )
+    chemfig_code = re.sub(
+        r'\\mcfleft\{([^{}]+)\}\{((?:[^{}]|\{[^{}]*\})+)\}',
+        r'\2\1',
+        chemfig_code
+    )
+    chemfig_code = chemfig_code.replace(r'\mcfabove', r'\chemabove')
+    chemfig_code = chemfig_code.replace(r'\mcfbelow', r'\chembelow')
+    chemfig_code = chemfig_code.replace(r'\mcfplus', '+')
+    chemfig_code = chemfig_code.replace(r'\mcfminus', '-')
     chemfig_code = re.sub(r'%.*', '', chemfig_code).replace('\n', ' ').strip()
     chemfig_code = re.sub(r'\s+', ' ', chemfig_code)
     return chemfig_code
+
+
+def _finalize_chemfig_outputs(chemfig_code, clean_output=True):
+    """同时保留原始输出与预览友好输出。"""
+    raw_output = str(chemfig_code).strip()
+    preview_output = _clean_chemfig_output(raw_output) if clean_output else raw_output
+    return {
+        'raw': raw_output,
+        'preview': preview_output,
+    }
 
 
 def _prepare_smiles_rgroups(smiles):
@@ -381,9 +497,9 @@ def get_smiles_preview(smiles):
     return None
 
 
-def smiles_to_chemfig(smiles: str, normalize=True, clean_output=True):
+def smiles_to_chemfig_outputs(smiles: str, normalize=True, clean_output=True):
     """
-    将 SMILES 转换为 chemfig。
+    将 SMILES 转换为 chemfig，并同时返回原始输出与预览输出。
 
     关键流程：
     A. 先做 R 位点预处理（如有）
@@ -405,6 +521,9 @@ def smiles_to_chemfig(smiles: str, normalize=True, clean_output=True):
     if not placeholder_to_label:
         mol = Chem.MolFromSmiles(smi)
         if mol:
+            if normalize:
+                smi = Chem.MolToSmiles(mol, canonical=True, isomericSmiles=True)
+                mol = Chem.MolFromSmiles(smi)
             Chem.Kekulize(mol, clearAromaticFlags=True)
             smi = Chem.MolToSmiles(mol, kekuleSmiles=True)
 
@@ -420,17 +539,60 @@ def smiles_to_chemfig(smiles: str, normalize=True, clean_output=True):
     if placeholder_to_label:
         chemfig = _replace_placeholders_with_rlabels(chemfig, placeholder_to_label)
 
-    if clean_output:
-        chemfig = _clean_chemfig_output(chemfig)
+    return _finalize_chemfig_outputs(chemfig, clean_output=clean_output)
 
-    return chemfig
+
+def smiles_to_chemfig(smiles: str, normalize=True, clean_output=True):
+    """兼容旧调用：默认返回预览友好的 chemfig。"""
+    outputs = smiles_to_chemfig_outputs(
+        smiles,
+        normalize=normalize,
+        clean_output=clean_output
+    )
+    return outputs['preview']
+
+
+def mol_to_chemfig_outputs(mol_block: str, clean_output=True):
+    """将 Molfile 转换为 chemfig，并同时返回原始输出与预览输出。"""
+    try:
+        from mol2chemfigPy3 import mol2chemfig
+    except ImportError:
+        raise ImportError('服务器未安装 mol2chemfigPy3')
+
+    prepared_mol, placeholder_to_label = _prepare_molblock_rgroups(mol_block)
+
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.mol', delete=False) as tf:
+        tf.write(prepared_mol)
+        temp_path = tf.name
+
+    try:
+        chemfig_code = mol2chemfig(temp_path, aromatic=False, inline=True)
+
+        if _contains_mol2chemfig_error(chemfig_code):
+            raise Exception(
+                chemfig_code.strip() if chemfig_code else 'conversion returned empty result'
+            )
+
+        if placeholder_to_label:
+            chemfig_code = _replace_placeholders_with_rlabels(
+                chemfig_code, placeholder_to_label
+            )
+
+        return _finalize_chemfig_outputs(chemfig_code, clean_output=clean_output)
+    finally:
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
 
 
 # ================= 路由 =================
 @app.route('/')
 def index():
-    # 默认打开 Mol 转 Chemfig 页面
     return render_template('mol.html')
+
+
+@app.route('/smiles')
+def smiles_page():
+    return render_template('index.html')
 
 
 @app.route('/mol')
@@ -471,40 +633,14 @@ def convert_mol():
         return jsonify({'error': '请输入 Molfile 内容'}), 400
 
     try:
-        from mol2chemfigPy3 import mol2chemfig
-
-        # 1) 预处理 R 位点
-        prepared_mol, placeholder_to_label = _prepare_molblock_rgroups(mol_block)
-
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.mol', delete=False) as tf:
-            tf.write(prepared_mol)
-            temp_path = tf.name
-
-        try:
-            # 2) 调用原生 mol2chemfig（不改第三方源码）
-            chemfig_code = mol2chemfig(temp_path, aromatic=False, inline=True)
-
-            if _contains_mol2chemfig_error(chemfig_code):
-                raise Exception(chemfig_code.strip() if chemfig_code else 'conversion returned empty result')
-
-            # 3) 回填占位元素 -> R 标签
-            if placeholder_to_label:
-                chemfig_code = _replace_placeholders_with_rlabels(
-                    chemfig_code, placeholder_to_label
-                )
-
-            # 4) 清理输出
-            chemfig_code = _clean_chemfig_output(chemfig_code)
-            preview_url = get_mol_preview(mol_block)
-
-            return jsonify({
-                'chemfig': chemfig_code,
-                'preview_url': preview_url
-            })
-        finally:
-            if os.path.exists(temp_path):
-                os.remove(temp_path)
-
+        outputs = mol_to_chemfig_outputs(mol_block)
+        preview_url = get_mol_preview(mol_block)
+        return jsonify({
+            'chemfig': outputs['preview'],
+            'chemfig_preview': outputs['preview'],
+            'chemfig_raw': outputs['raw'],
+            'preview_url': preview_url
+        })
     except Exception as exc:
         error_details = traceback.format_exc()
         print(f'Mol 转换接口出错:\n{error_details}')
@@ -520,12 +656,14 @@ def convert():
         return jsonify({'error': '请输入 SMILES 字符串'}), 400
 
     try:
-        chemfig_code = smiles_to_chemfig(smiles)
+        outputs = smiles_to_chemfig_outputs(smiles)
         preview_url = get_smiles_preview(smiles)
 
         return jsonify({
             'smiles': smiles,
-            'chemfig': chemfig_code,
+            'chemfig': outputs['preview'],
+            'chemfig_preview': outputs['preview'],
+            'chemfig_raw': outputs['raw'],
             'preview_url': preview_url
         })
     except Exception as exc:

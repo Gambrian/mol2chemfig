@@ -54,6 +54,10 @@ def smiles_to_chemfig(smiles: str):
 
     if CONFIG["clean_output"]:
         import re
+        chemfig = chemfig.replace(r'\mcfabove', r'\chemabove')
+        chemfig = chemfig.replace(r'\mcfbelow', r'\chembelow')
+        chemfig = chemfig.replace(r'\mcfplus', '+')
+        chemfig = chemfig.replace(r'\mcfminus', '-')
         # 移除 % 开头的注释和换行符
         chemfig = re.sub(r'%.*', '', chemfig).replace("\n", "")
     
