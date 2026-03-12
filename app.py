@@ -54,6 +54,7 @@ def render_tikz_locally(tikz_code):
     try:
         node_executable = resolve_node_executable()
         script_path = get_resource_path('render_tikz.js')
+        env = os.environ.copy()
 
         # Windows 下隐藏黑色命令行窗口
         creation_flags = 0
@@ -65,7 +66,8 @@ def render_tikz_locally(tikz_code):
             input=tikz_code.encode('utf-8'),
             capture_output=True,
             check=False,
-            creationflags=creation_flags
+            creationflags=creation_flags,
+            env=env
         )
 
         stdout_bytes = result.stdout

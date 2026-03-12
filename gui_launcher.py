@@ -19,6 +19,8 @@ PORT = 5000
 NODE_PORTABLE_URL = "https://npmmirror.com/mirrors/node/v18.17.0/node-v18.17.0-win-x64.zip"
 NODE_DIR = "node_runtime"
 APP_NAME = "Chemfig 实验室管理器"
+NPM_REGISTRY = "https://registry.npmmirror.com"
+REQUIRED_NODE_PACKAGES = ["node-tikzjax"]
 
 # 用于重定向日志的类
 class LogRedirector:
@@ -42,6 +44,7 @@ class AppManager:
         self.root.geometry("700x500")
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
         self.app_root = Path(sys.executable).resolve().parent if getattr(sys, 'frozen', False) else Path(__file__).resolve().parent
+        self.resource_root = Path(get_resource_path('.')).resolve()
         
         self.flask_thread = None
         self.is_running = False
@@ -99,18 +102,20 @@ class AppManager:
     def _env_check_thread(self):
         # 1. 检测 Node.js
         node_ready = self._ensure_node()
-        
+
         # 2. 检测依赖包 (npm install)
+        packages_ready = False
         if node_ready:
-            self._ensure_node_packages()
-            
-        self.root.after(0, self._finalize_env_check, node_ready)
+            packages_ready = self._ensure_node_packages()
+
+        self.root.after(0, self._finalize_env_check, node_ready, packages_ready)
 
     def _ensure_node(self):
         # 检查系统路径
         try:
             subprocess.run(["node", "-v"], capture_output=True, check=True)
             self.log("检测到系统已安装 Node.js")
+            os.environ.setdefault("CHEMFIGLAB_NODE_SOURCE", "system")
             return True
         except:
             pass
@@ -120,6 +125,7 @@ class AppManager:
         if node_exe.exists():
             os.environ["PATH"] = str(node_exe.parent) + os.pathsep + os.environ["PATH"]
             self.log("使用内置便携版 Node.js")
+            os.environ["CHEMFIGLAB_NODE_SOURCE"] = "portable"
             return True
 
         # 自动下载
@@ -158,39 +164,140 @@ class AppManager:
             
             os.environ["PATH"] = str(node_dir) + os.pathsep + os.environ["PATH"]
             self.log("Node.js 便携版安装成功")
+            os.environ["CHEMFIGLAB_NODE_SOURCE"] = "portable"
             return True
         except Exception as e:
             self.log(f"下载失败: {str(e)}")
             messagebox.showerror("错误", f"Node.js 下载失败: {e}")
             return False
 
-    def _ensure_node_packages(self):
-        node_modules_dir = self.app_root / "node_modules"
-        if not node_modules_dir.exists():
-            self.log("正在安装 Node.js 渲染依赖 (npm install)...")
-            try:
-                # 使用淘宝镜像
-                result = subprocess.run(
-                    ["npm", "install", "--registry=https://registry.npmmirror.com"],
-                    cwd=self.app_root,
-                    capture_output=True,
-                    text=True,
-                    check=True
-                )
-                if result.stdout.strip():
-                    self.log(result.stdout.strip())
-                self.log("Node.js 依赖安装完成")
-            except Exception as e:
-                self.log(f"依赖安装失败: {e}")
+    def _resolve_node_executable(self):
+        portable_node = self.app_root / NODE_DIR / "node.exe"
+        if portable_node.exists():
+            return portable_node
+        return Path("node")
 
-    def _finalize_env_check(self, success):
-        if success:
+    def _resolve_npm_command(self):
+        node_exe = self._resolve_node_executable()
+        npm_cli = self.app_root / NODE_DIR / "node_modules" / "npm" / "bin" / "npm-cli.js"
+        if npm_cli.exists() and node_exe.exists():
+            return [str(node_exe), str(npm_cli)]
+        return ["npm"]
+
+    def _get_local_npm_project_root(self):
+        package_json = Path(get_resource_path("package.json")).resolve()
+        return package_json.parent
+
+    def _get_system_npm_root(self):
+        try:
+            result = subprocess.run(
+                ["npm", "root", "-g"],
+                capture_output=True,
+                text=True,
+                check=False
+            )
+            if result.returncode != 0:
+                return None
+            npm_root = result.stdout.strip()
+            return npm_root or None
+        except Exception:
+            return None
+
+    def _configure_node_path(self, npm_root):
+        if not npm_root:
+            return
+
+        current = os.environ.get("NODE_PATH", "")
+        parts = [part for part in current.split(os.pathsep) if part]
+        if npm_root not in parts:
+            parts.insert(0, npm_root)
+            os.environ["NODE_PATH"] = os.pathsep.join(parts)
+
+    def _has_required_node_packages(self, base_dir):
+        for package_name in REQUIRED_NODE_PACKAGES:
+            package_dir = Path(base_dir) / package_name
+            if not package_dir.exists():
+                return False
+        return True
+
+    def _try_use_system_node_packages(self):
+        npm_root = self._get_system_npm_root()
+        if not npm_root:
+            self.log("未检测到系统全局 npm 包目录")
+            return False
+
+        if not self._has_required_node_packages(npm_root):
+            self.log(f"系统全局 npm 包目录存在，但缺少依赖: {npm_root}")
+            return False
+
+        self._configure_node_path(npm_root)
+        self.log(f"复用系统全局 Node.js 渲染依赖: {npm_root}")
+        return True
+
+    def _ensure_node_packages(self):
+        local_project_root = self._get_local_npm_project_root()
+        local_node_modules = local_project_root / "node_modules"
+        if self._has_required_node_packages(local_node_modules):
+            self._configure_node_path(str(local_node_modules))
+            self.log(f"检测到本地 Node.js 渲染依赖已存在: {local_node_modules}")
+            return True
+
+        node_source = os.environ.get("CHEMFIGLAB_NODE_SOURCE", "")
+        if node_source == "system" and self._try_use_system_node_packages():
+            return True
+
+        self.log(f"正在安装 Node.js 渲染依赖 (npm install)... 目录: {local_project_root}")
+        try:
+            result = subprocess.run(
+                self._resolve_npm_command() + [
+                    "install",
+                    "--registry",
+                    NPM_REGISTRY,
+                    "--no-fund",
+                    "--no-audit",
+                    "--omit=dev",
+                ],
+                cwd=local_project_root,
+                capture_output=True,
+                text=True,
+                check=False
+            )
+
+            if result.stdout.strip():
+                self.log(result.stdout.strip())
+            if result.stderr.strip():
+                self.log(result.stderr.strip())
+
+            if result.returncode != 0:
+                self.log(f"依赖安装失败，npm exit code={result.returncode}")
+                return False
+
+            if self._has_required_node_packages(local_node_modules):
+                self._configure_node_path(str(local_node_modules))
+                self.log("Node.js 依赖安装完成")
+                return True
+
+            self.log("npm install 已执行，但仍未找到所需依赖")
+            return False
+        except Exception as e:
+            self.log(f"依赖安装失败: {e}")
+            return False
+
+    def _finalize_env_check(self, node_ready, packages_ready):
+        if node_ready and packages_ready:
             self.status_label.config(text="状态: 环境就绪", foreground="green")
             self.start_btn.config(state=tk.NORMAL)
             self.log("环境检查完毕，点击“启动服务”开始使用。")
-        else:
-            self.status_label.config(text="状态: 缺少 Node 环境 (渲染功能将受限)", foreground="orange")
+            return
+
+        if node_ready and not packages_ready:
+            self.status_label.config(text="状态: Node 已就绪，但渲染依赖安装失败", foreground="orange")
             self.start_btn.config(state=tk.NORMAL)
+            self.log(f"提示：请检查网络或镜像源是否可访问。当前镜像: {NPM_REGISTRY}")
+            return
+
+        self.status_label.config(text="状态: 缺少 Node 环境 (渲染功能将受限)", foreground="orange")
+        self.start_btn.config(state=tk.NORMAL)
 
     def start_service(self):
         if self.is_running: return

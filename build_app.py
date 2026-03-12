@@ -54,8 +54,8 @@ def build():
     dist_path = os.path.join('dist', APP_NAME)
     
     print(f"\n打包完成！EXE 位于: {dist_path}")
-    print("注意：由于 TikZJax 依赖 Node.js，请确保运行环境中已安装 Node.js，")
-    print("或者将 Node.js 便携版放置在应用根目录下。")
+    print("说明：当前构建不会打包 node_modules，首次启动时会自动通过 npm 镜像安装渲染依赖。")
+    print("仍需确保运行环境中存在 Node.js，或者将 Node.js 便携版放置在应用根目录下。")
 
 if __name__ == "__main__":
     build()

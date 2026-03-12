@@ -1,4 +1,28 @@
-const { default: tex2svg } = require('node-tikzjax');
+const path = require('path');
+
+function loadTex2Svg() {
+    const candidates = [
+        'node-tikzjax',
+        path.join(__dirname, 'node_modules', 'node-tikzjax'),
+        path.join(__dirname, '..', 'node_modules', 'node-tikzjax'),
+    ];
+
+    for (const candidate of candidates) {
+        try {
+            const mod = require(candidate);
+            return mod.default || mod;
+        } catch (err) {
+            if (err && err.code !== 'MODULE_NOT_FOUND') {
+                throw err;
+            }
+        }
+    }
+
+    const searched = candidates.join('\n');
+    throw new Error(`Cannot load node-tikzjax. Searched:\n${searched}`);
+}
+
+const tex2svg = loadTex2Svg();
 
 function readStdin() {
     return new Promise((resolve, reject) => {
